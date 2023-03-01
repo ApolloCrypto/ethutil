@@ -1,4 +1,4 @@
-package ethereum_util
+package util
 
 import (
 	"fmt"
@@ -8,6 +8,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"golang.org/x/net/context"
 	"math/big"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -52,10 +53,17 @@ func GetEvent(timeout time.Duration, from int64, to int64, address []common.Addr
 		return nil, fmt.Errorf("get event error: %v", info.err)
 	}
 	logs := info.arrangeLogs()
+	Finalizer(info)
 	stream = &LogsStream{
 		logs: logs,
 	}
 	return stream, nil
+}
+func Finalizer(info *globalInfo) {
+	for i := 0; i < len(info.queue); i++ {
+		info.queue[i].shareInfo = nil
+	}
+	runtime.SetFinalizer(info, nil)
 }
 func (g *globalInfo) arrangeLogs() []types.Log {
 	var i int32 = 0

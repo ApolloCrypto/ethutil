@@ -1,4 +1,4 @@
-package ethereum_util
+package util
 
 import (
 	"errors"

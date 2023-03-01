@@ -1,4 +1,4 @@
-package ethereum_util
+package util
 
 import "github.com/ethereum/go-ethereum/core/types"
 
