@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/cockroachdb/errors"
+	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"math/big"
