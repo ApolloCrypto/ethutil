@@ -5,7 +5,6 @@ go 1.18
 require (
 	github.com/cockroachdb/errors v1.9.1
 	github.com/ethereum/go-ethereum v1.11.2
-	golang.org/x/net v0.7.0
 )
 
 require (
