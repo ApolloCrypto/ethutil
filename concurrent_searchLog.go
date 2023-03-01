@@ -60,6 +60,7 @@ func GetEvent(timeout time.Duration, from int64, to int64, address []common.Addr
 	return stream, nil
 }
 func Finalizer(info *globalInfo) {
+	//消除循环依赖导致的垃圾回收不了
 	for i := 0; i < len(info.queue); i++ {
 		info.queue[i].shareInfo = nil
 	}
@@ -124,10 +125,10 @@ type logsWork struct {
 }
 
 func newLogsWork(global *globalInfo) (result *logsWork) {
-	var barrier int32 = 0
-	atomic.LoadInt32(&barrier)
+	//var barrier int32 = 0
+	//atomic.LoadInt32(&barrier)
 	value := atomic.AddInt32(&global.currentId, 1)
-	atomic.StoreInt32(&barrier, 1)
+	//atomic.StoreInt32(&barrier, 1)
 	id := value - 1
 	end := int64(id+1)*MaxQueryBlockSize - 1 + global.offset
 	if end > global.end {

@@ -5,7 +5,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 )
 
-const Polygon_Node_URL = "https://polygon-mainnet.g.alchemy.com/v2/GUzL9NWX7QSpBVQJsvp15aNKYk2XsI-w"
+const Polygon_Node_URL = "https://polygon-mainnet.g.alchemy.com/v2/bG72w682SlQ0uQwUcSfbZmQAB1VPwpZd"
 
 var (
 	client *ethclient.Client

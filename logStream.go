@@ -1,6 +1,8 @@
 package util
 
-import "github.com/ethereum/go-ethereum/core/types"
+import (
+	"github.com/ethereum/go-ethereum/core/types"
+)
 
 // logs filter Stream
 
@@ -24,6 +26,7 @@ func (l *LogsStream) FilterLog(filter FilterFunc) *LogsStream {
 	}
 	return l
 }
+
 func (l *LogsStream) Done() (logs []types.Log, err error) {
 	if l.err != nil {
 		return nil, l.err

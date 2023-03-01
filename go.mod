@@ -1,4 +1,4 @@
-module util
+module github.com/jbossbc/ethereum/utils
 
 go 1.18
 
