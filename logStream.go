@@ -1,4 +1,4 @@
-package util
+package ethutil
 
 import (
 	"github.com/ethereum/go-ethereum/core/types"
