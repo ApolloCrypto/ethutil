@@ -1,23 +1,43 @@
 package ethutil
 
 import (
-	"errors"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"sync"
 )
-
-const Polygon_Node_URL = "https://polygon-mainnet.g.alchemy.com/v2/bG72w682SlQ0uQwUcSfbZmQAB1VPwpZd"
 
 var (
-	client *ethclient.Client
+	//onlyInit first successfully
+	//后面做多条链的单例
+	globalProto *ethClient
+	once        sync.Once
 )
 
-func init() {
-	dial, err := ethclient.Dial(Polygon_Node_URL)
-	if err != nil {
-		panic(any(errors.New("Polygon_Node_URL cant exist")))
-	}
-	client = dial
+type ethClient struct {
+	client *ethclient.Client
 }
-func GetClient() *ethclient.Client {
-	return client
+
+func (c *ethClient) GetRawClient() *ethclient.Client {
+	return c.client
+}
+
+func NewEthClient(url string) (*ethClient, error) {
+	client, err := ethclient.Dial(url)
+	if err != nil {
+		return nil, err
+	}
+	return &ethClient{client: client}, nil
+}
+func Init(url string) error {
+	client, err := ethclient.Dial(url)
+	if err != nil {
+		return err
+	}
+	once.Do(func() {
+		globalProto = &ethClient{client: client}
+	})
+	return nil
+}
+
+func GetClient() *ethClient {
+	return globalProto
 }

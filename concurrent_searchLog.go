@@ -7,6 +7,7 @@ import (
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/ethclient"
 	"math/big"
 	"runtime"
 	"strings"
@@ -24,28 +25,32 @@ var (
 	ongoing workState = 0
 )
 
-var TimeLess time.Duration = 1<<63 - 1
+type Timeout time.Duration
 
-const MaxQueryBlockSize int64 = 2000
+var (
+	// TimeLess the same as context.Background(),represent has no timeout limit
+	TimeLess Timeout = 1<<63 - 1
+)
 
+const maxQueryBlockSize int64 = 2000
 const defaultMallocCap int64 = 1024
-const MaxConcurrentNumber = 8e4
-const MaxWorkNumber = MaxConcurrentNumber / MaxQueryBlockSize
-const EmergencyRecovery = 100
-const SmoothRecoverRatio = 0.25
+const maxConcurrentNumber = 8e4
+const maxWorkNumber = maxConcurrentNumber / maxQueryBlockSize
+const emergencyRecovery = 100
+const smoothRecoverRatio = 0.25
 
-var DefaultSmoothRecoverTimes = time.Millisecond * 500
+var defaultSmoothRecoverTimes = time.Millisecond * 500
 
-func GetCurrentBlockNumber() (uint64, error) {
-	return GetClient().BlockNumber(context.Background())
+func (c *ethClient) GetCurrentBlockNumber() (uint64, error) {
+	return c.client.BlockNumber(context.Background())
 }
 
-func GetEvent(timeout time.Duration, from int64, to int64, address []common.Address, topics [][]common.Hash) (stream *LogsStream, err error) {
+func (c *ethClient) GetEvent(timeout time.Duration, from int64, to int64, address []common.Address, topics [][]common.Hash) (stream *LogsStream, err error) {
 	info := newGlobalInfo(timeout, from, to, address, topics)
 	var workNumber = info.workNumber
 	var i int32 = 0
 	for ; i < workNumber; i++ {
-		newLogsWork(info).handler()
+		newLogsWork(info).handler(c.client)
 	}
 	info.group.Wait()
 	ok := atomic.CompareAndSwapInt32((*int32)(&info.state), 0, 1)
@@ -76,14 +81,14 @@ func (g *globalInfo) arrangeLogs() []types.Log {
 }
 
 func newGlobalInfo(timeout time.Duration, from int64, to int64, address []common.Address, topics [][]common.Hash) (g *globalInfo) {
-	var workNumber = (to - from) / MaxQueryBlockSize
-	if MaxQueryBlockSize*workNumber+from != to {
+	var workNumber = (to - from) / maxQueryBlockSize
+	if maxQueryBlockSize*workNumber+from != to {
 		workNumber++
 	}
 	g = &globalInfo{end: to, errTrigger: sync.Once{}, mutex: sync.Mutex{}, workNumber: int32(workNumber), address: address, topics: topics, offset: from, timeout: timeout, queue: make([]*logsWork, workNumber), group: sync.WaitGroup{}}
 	var chanNumber int64 = workNumber
-	if chanNumber > MaxWorkNumber {
-		chanNumber = MaxWorkNumber
+	if chanNumber > maxWorkNumber {
+		chanNumber = maxWorkNumber
 	}
 	g.workMutex = sync.Mutex{}
 	g.controlPanel = controlPanel{cond: sync.NewCond(&g.workMutex), recoverSignal: make(chan int32, 1)}
@@ -130,7 +135,7 @@ func newLogsWork(global *globalInfo) (result *logsWork) {
 	value := atomic.AddInt32(&global.currentId, 1)
 	//atomic.StoreInt32(&barrier, 1)
 	id := value - 1
-	end := int64(id+1)*MaxQueryBlockSize - 1 + global.offset
+	end := int64(id+1)*maxQueryBlockSize - 1 + global.offset
 	if end > global.end {
 		end = global.end
 	}
@@ -138,7 +143,7 @@ func newLogsWork(global *globalInfo) (result *logsWork) {
 		id:        id,
 		done:      make(chan struct{}, 1),
 		shareInfo: global,
-		filter:    ethereum.FilterQuery{Topics: global.topics, Addresses: global.address, FromBlock: big.NewInt(int64(id)*MaxQueryBlockSize + global.offset), ToBlock: big.NewInt(int64(id+1)*MaxQueryBlockSize - 1 + global.offset)},
+		filter:    ethereum.FilterQuery{Topics: global.topics, Addresses: global.address, FromBlock: big.NewInt(int64(id)*maxQueryBlockSize + global.offset), ToBlock: big.NewInt(int64(id+1)*maxQueryBlockSize - 1 + global.offset)},
 	}
 	result.done <- struct{}{}
 	global.queue[id] = result
@@ -154,8 +159,8 @@ type controlPanel struct {
 }
 
 func (cp *controlPanel) smoothRecover() {
-	time.Sleep(DefaultSmoothRecoverTimes)
-	var timeGap = time.NewTicker(DefaultSmoothRecoverTimes)
+	time.Sleep(defaultSmoothRecoverTimes)
+	var timeGap = time.NewTicker(defaultSmoothRecoverTimes)
 	for {
 		select {
 		case <-timeGap.C:
@@ -175,7 +180,7 @@ func (cp *controlPanel) recover() {
 	cp.recoverSignal <- 1
 }
 
-func (work *logsWork) handler() {
+func (work *logsWork) handler(client *ethclient.Client) {
 	go func() {
 		<-work.shareInfo.workChan
 		defer func() {
@@ -200,13 +205,13 @@ func (work *logsWork) handler() {
 				work.shareInfo.workMutex.Unlock()
 				if atomic.LoadInt32(&work.shareInfo.controlPanel.state) == 1 {
 					atomic.AddInt32(&work.shareInfo.controlPanel.sumTimes, 1)
-					if atomic.LoadInt32(&work.shareInfo.controlPanel.sumTimes) == 0 || float64(work.shareInfo.controlPanel.failedTimes/work.shareInfo.controlPanel.sumTimes) < SmoothRecoverRatio {
+					if atomic.LoadInt32(&work.shareInfo.controlPanel.sumTimes) == 0 || float64(work.shareInfo.controlPanel.failedTimes/work.shareInfo.controlPanel.sumTimes) < smoothRecoverRatio {
 						work.shareInfo.controlPanel.recover()
 					}
 				}
-				logs, err := GetClient().FilterLogs(context.Background(), work.filter)
+				logs, err := client.FilterLogs(context.Background(), work.filter)
 				if err != nil {
-					if work.shareInfo.retryTimes >= EmergencyRecovery {
+					if work.shareInfo.retryTimes >= emergencyRecovery {
 						if atomic.CompareAndSwapInt32(&work.shareInfo.controlPanel.state, 0, 1) {
 							fmt.Println(work.shareInfo.retryTimes)
 							work.shareInfo.retryTimes = 0
@@ -216,7 +221,7 @@ func (work *logsWork) handler() {
 					if strings.Contains(err.Error(), "429 Too Many Requests") {
 						if atomic.LoadInt32(&work.shareInfo.controlPanel.state) == 0 {
 							atomic.AddInt32(&work.shareInfo.retryTimes, 1)
-							time.Sleep(DefaultSmoothRecoverTimes)
+							time.Sleep(defaultSmoothRecoverTimes)
 						} else if atomic.LoadInt32(&work.shareInfo.controlPanel.state) == 1 {
 							atomic.AddInt32(&work.shareInfo.controlPanel.failedTimes, 1)
 						}
