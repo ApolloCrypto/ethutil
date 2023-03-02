@@ -53,13 +53,13 @@ func GetEvent(timeout time.Duration, from int64, to int64, address []common.Addr
 		return nil, fmt.Errorf("get event error: %v", info.err)
 	}
 	logs := info.arrangeLogs()
-	Finalizer(info)
+	finalizer(info)
 	stream = &LogsStream{
 		logs: logs,
 	}
 	return stream, nil
 }
-func Finalizer(info *globalInfo) {
+func finalizer(info *globalInfo) {
 	//消除循环依赖导致的垃圾回收不了
 	for i := 0; i < len(info.queue); i++ {
 		info.queue[i].shareInfo = nil
