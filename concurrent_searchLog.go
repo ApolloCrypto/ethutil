@@ -60,8 +60,11 @@ func (c *ethClient) GetEvent(timeout time.Duration, from int64, to int64, addres
 	logs := info.arrangeLogs()
 	finalizer(info)
 	stream = &LogsStream{
-		logs:   logs,
-		client: c,
+		logs:      logs,
+		client:    c,
+		m:         sync.Mutex{},
+		group:     sync.WaitGroup{},
+		workMutex: sync.Mutex{},
 	}
 	return stream, nil
 }

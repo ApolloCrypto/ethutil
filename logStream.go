@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -146,12 +147,23 @@ func (l *LogsStream) FilterLog(filter FilterFunc) *LogsStream {
 	return l
 }
 
-func (l *LogsStream) Done() (logs []types.Log, err error) {
+func (l *LogsStream) Done() (result []types.Log, err error) {
 	l.Check()
+	result = make([]types.Log, 0, len(l.logs))
+	copy(l.logs, result)
+	defer streamFinalizer(l)
 	if l.err != nil {
-		return nil, l.err
+		err = l.err
+		return
 	}
-	return l.logs, nil
+	return result, nil
+}
+
+func streamFinalizer(l *LogsStream) {
+	for i := 0; i < len(l.finishWork); i++ {
+		l.finishWork[i].stream = nil
+	}
+	runtime.SetFinalizer(l, nil)
 }
 
 type nocopy uintptr
@@ -227,7 +239,7 @@ func (work *workUnit) tryEnd() bool {
 	work.stream.group.Done()
 	work.stream.workMutex.Lock()
 	defer work.stream.workMutex.Unlock()
-	if work.stream.waitWork == nil || len(work.stream.waitWork) == 0 {
+	if work.stream.waitWork == nil || len(work.stream.waitWork) == 0 || len(work.stream.canWork) == len(work.stream.waitWork) {
 		return true
 	}
 	work.stream.canWork <- 1
