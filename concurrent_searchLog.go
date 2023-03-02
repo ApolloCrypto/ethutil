@@ -60,7 +60,8 @@ func (c *ethClient) GetEvent(timeout time.Duration, from int64, to int64, addres
 	logs := info.arrangeLogs()
 	finalizer(info)
 	stream = &LogsStream{
-		logs: logs,
+		logs:   logs,
+		client: c,
 	}
 	return stream, nil
 }
