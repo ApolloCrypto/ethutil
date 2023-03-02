@@ -1,4 +1,4 @@
-module github.com/JBossBC/ethereum-util
+module github.com/JBossBC/ethutil
 
 go 1.18
 
