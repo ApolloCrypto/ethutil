@@ -32,6 +32,8 @@ type LogsStream struct {
 	canWork    chan int
 	waitWork   []*workUnit
 	finishWork []*workUnit
+	workNumber int
+	init       bool
 	group      sync.WaitGroup
 }
 
@@ -97,9 +99,9 @@ func (l *LogsStream) TxFromAndTo(from []common.Address) *LogsStream {
 		}()
 	}
 	l.group.Wait()
-	for len(l.canWork) != 0 {
+	for len(l.waitWork) != 0 {
+		work := l.tryNotify()
 		go func() {
-			work := l.tryNotify()
 			txFromAndTo(work, from)
 			work.end()
 		}()
@@ -109,6 +111,7 @@ func (l *LogsStream) TxFromAndTo(from []common.Address) *LogsStream {
 }
 
 var txFromAndTo = func(unit *workUnit, from []common.Address) {
+filter:
 	for i := unit.from; i < unit.to; i++ {
 		var logsInfo = unit.stream.logs[i]
 	retrySearch:
@@ -126,7 +129,7 @@ var txFromAndTo = func(unit *workUnit, from []common.Address) {
 		for j := 0; j < len(from); j++ {
 			var address = from[j]
 			if address == receipt {
-				continue
+				continue filter
 			}
 		}
 		unit.result = append(unit.result, logsInfo)
@@ -140,9 +143,37 @@ func (l *LogsStream) FilterLog(filter FilterFunc) *LogsStream {
 	}
 	l.workBefore()
 	defer l.workAfter()
-	err := filter(l.logs)
-	if err != nil {
-		l.err = err
+	var eventually error
+	for i := 0; i < len(l.work); i++ {
+		go func() {
+			work := l.work[i]
+			err := filter(l.logs[work.from:work.to], work)
+			if err != nil && eventually == nil {
+				eventually = err
+			}
+			if !work.tryEnd() {
+				notify := l.tryNotify()
+				err = filter(l.logs[work.from:work.to], notify)
+				if err != nil && eventually == nil {
+					eventually = err
+				}
+				notify.end()
+			}
+		}()
+	}
+	l.group.Wait()
+	for len(l.waitWork) != 0 {
+		work := l.tryNotify()
+		go func() {
+			err := filter(l.logs[work.from:work.to], work)
+			if err != nil && eventually == nil {
+				eventually = err
+			}
+			work.end()
+		}()
+	}
+	if eventually != nil {
+		l.err = eventually
 	}
 	return l
 }
@@ -167,7 +198,7 @@ func streamFinalizer(l *LogsStream) {
 }
 
 type nocopy uintptr
-type FilterFunc func([]types.Log) error
+type FilterFunc func(log []types.Log, work *workUnit) error
 
 func onWorkStream(stream *LogsStream) {
 	stream.m.Lock()
@@ -188,32 +219,52 @@ func onWorkStream(stream *LogsStream) {
 	}
 	stream.group.Add(workNumber)
 	stream.finishWork = make([]*workUnit, 0, workNumber+remainNumber)
+	stream.workNumber = workNumber + remainNumber
 	mallocWorkUnit(stream, workNumber, remainNumber)
 }
 func mallocWorkUnit(stream *LogsStream, workNumber int, remainNumber int) {
 	var begin, end = 0, len(stream.logs)
-	stream.work = make([]*workUnit, 0, workNumber)
+	if !stream.init {
+		stream.work = make([]*workUnit, 0, workNumber)
+	}
 	for i := 0; i < workNumber; i++ {
 		if begin > end {
 			return
 		}
-		var work = &workUnit{result: make([]types.Log, 0, defaultHandlerNumberPerWorker), from: begin, to: defaultHandlerNumberPerWorker + begin, stream: stream}
-		stream.work = append(stream.work, work)
-		stream.finishWork = append(stream.finishWork, work)
+		if !stream.init {
+			var work = &workUnit{result: make([]types.Log, 0, defaultHandlerNumberPerWorker), from: begin, to: defaultHandlerNumberPerWorker + begin, stream: stream}
+			stream.work = append(stream.work, work)
+			stream.finishWork = append(stream.finishWork, work)
+		} else {
+			var temp = stream.work[i]
+			temp.from = begin
+			temp.to = begin + defaultHandlerNumberPerWorker
+			temp.result = temp.result[0:0]
+		}
 		begin = begin + defaultHandlerNumberPerWorker
 	}
 	if remainNumber == 0 {
 		return
 	}
-	stream.canWork = make(chan int, remainNumber)
-	stream.waitWork = make([]*workUnit, 0, remainNumber)
+	if !stream.init {
+		stream.canWork = make(chan int, remainNumber)
+		stream.waitWork = make([]*workUnit, 0, remainNumber)
+	}
 	for i := 0; i < remainNumber; i++ {
 		if begin > end {
 			return
 		}
-		var work = &workUnit{result: make([]types.Log, 0, defaultHandlerNumberPerWorker), from: begin, to: defaultHandlerNumberPerWorker + begin, stream: stream}
-		stream.waitWork = append(stream.waitWork, work)
-		stream.finishWork = append(stream.finishWork, work)
+		if !stream.init {
+			var work = &workUnit{result: make([]types.Log, 0, defaultHandlerNumberPerWorker), from: begin, to: defaultHandlerNumberPerWorker + begin, stream: stream}
+			stream.waitWork = append(stream.waitWork, work)
+			stream.finishWork = append(stream.finishWork, work)
+		} else {
+			var temp = stream.finishWork[workNumber+i]
+			temp.from = begin
+			temp.to = begin + defaultHandlerNumberPerWorker
+			temp.result = temp.result[0:0]
+			stream.waitWork = append(stream.waitWork, temp)
+		}
 		begin = begin + defaultHandlerNumberPerWorker
 	}
 }
@@ -222,7 +273,7 @@ func collect(stream *LogsStream) {
 	defer stream.m.Unlock()
 	stream.logs = nil
 	var result = make([]types.Log, 0, len(stream.logs))
-	for i := 0; i < len(stream.finishWork); i++ {
+	for i := 0; i < stream.workNumber; i++ {
 		result = append(result, stream.finishWork[i].result...)
 	}
 	stream.logs = result

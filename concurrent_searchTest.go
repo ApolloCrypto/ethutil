@@ -19,7 +19,9 @@ func testGetLogs(t *testing.T) {
 		return
 	}
 	done, err := event.Done()
-
+	if err != nil {
+		return
+	}
 	if err != nil {
 		return
 	}
