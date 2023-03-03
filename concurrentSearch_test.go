@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func testGetLogs(t *testing.T) {
+func TestGetLogs(t *testing.T) {
 	//number, _ := GetCurrentBlockNumber()
 	err := Init("https://polygon-mainnet.g.alchemy.com/v2/bG72w682SlQ0uQwUcSfbZmQAB1VPwpZd")
 	if err != nil {

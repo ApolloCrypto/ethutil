@@ -16,7 +16,7 @@ const maxWorkerNumber = 50
 const defaultHandlerNumberPerWorker = 200
 const maxConcurrentHandlerNumber = maxWorkerNumber * defaultHandlerNumberPerWorker
 
-var retryDuration = time.Millisecond * 300
+var retryDuration = time.Second
 
 // logs filter Stream
 
@@ -37,7 +37,7 @@ type LogsStream struct {
 	group      sync.WaitGroup
 }
 
-func (l *LogsStream) Check() {
+func (l *LogsStream) check() {
 	if uintptr(l.nocopy) != uintptr(unsafe.Pointer(l)) && !atomic.CompareAndSwapUintptr((*uintptr)(&l.nocopy), 0, uintptr(unsafe.Pointer(l))) && uintptr(l.nocopy) != uintptr(unsafe.Pointer(l)) {
 		panic(any("object has copied"))
 	}
@@ -45,6 +45,9 @@ func (l *LogsStream) Check() {
 func (l *LogsStream) tryNotify() *workUnit {
 	l.workMutex.Lock()
 	defer l.workMutex.Unlock()
+	if len(l.waitWork) < 1 {
+		return nil
+	}
 	<-l.canWork
 	var work = l.waitWork[0]
 	l.waitWork = l.waitWork[1:]
@@ -80,6 +83,7 @@ func (l *LogsStream) workAfter() {
 }
 
 func (l *LogsStream) TxFromAndTo(from []common.Address) *LogsStream {
+	l.check()
 	l.m.Lock()
 	defer l.m.Unlock()
 	if l.err != nil {
@@ -89,22 +93,25 @@ func (l *LogsStream) TxFromAndTo(from []common.Address) *LogsStream {
 	defer l.workAfter()
 	//handler
 	for i := 0; i < len(l.work); i++ {
-		go func() {
-			txFromAndTo(l.work[i], from)
-			if !l.work[i].tryEnd() {
+		go func(index int) {
+			txFromAndTo(l.work[index], from)
+			if !l.work[index].tryEnd() {
 				work := l.tryNotify()
 				txFromAndTo(work, from)
 				work.end()
 			}
-		}()
+		}(i)
 	}
 	l.group.Wait()
 	for len(l.waitWork) != 0 {
 		work := l.tryNotify()
-		go func() {
+		if work == nil {
+			break
+		}
+		go func(work *workUnit) {
 			txFromAndTo(work, from)
 			work.end()
-		}()
+		}(work)
 	}
 	l.group.Wait()
 	return l
@@ -114,13 +121,14 @@ var txFromAndTo = func(unit *workUnit, from []common.Address) {
 filter:
 	for i := unit.from; i < unit.to; i++ {
 		var logsInfo = unit.stream.logs[i]
-	retrySearch:
+	retryFind:
 		client := unit.stream.client.GetRawClient()
 		hash, b, err := client.TransactionByHash(context.Background(), logsInfo.TxHash)
 		if err != nil || b {
 			time.Sleep(retryDuration)
-			goto retrySearch
+			goto retryFind
 		}
+	retrySearch:
 		receipt, err := client.TransactionSender(context.Background(), hash, logsInfo.BlockHash, logsInfo.TxIndex)
 		if err != nil {
 			time.Sleep(retryDuration)
@@ -129,15 +137,15 @@ filter:
 		for j := 0; j < len(from); j++ {
 			var address = from[j]
 			if address == receipt {
+				unit.result = append(unit.result, logsInfo)
 				continue filter
 			}
 		}
-		unit.result = append(unit.result, logsInfo)
 	}
 }
 
 func (l *LogsStream) FilterLog(filter FilterFunc) *LogsStream {
-	l.Check()
+	l.check()
 	if l.err != nil {
 		return l
 	}
@@ -164,13 +172,16 @@ func (l *LogsStream) FilterLog(filter FilterFunc) *LogsStream {
 	l.group.Wait()
 	for len(l.waitWork) != 0 {
 		work := l.tryNotify()
-		go func() {
+		if work == nil {
+			break
+		}
+		go func(work *workUnit) {
 			err := filter(l.logs[work.from:work.to], work)
 			if err != nil && eventually == nil {
 				eventually = err
 			}
 			work.end()
-		}()
+		}(work)
 	}
 	if eventually != nil {
 		l.err = eventually
@@ -179,9 +190,9 @@ func (l *LogsStream) FilterLog(filter FilterFunc) *LogsStream {
 }
 
 func (l *LogsStream) Done() (result []types.Log, err error) {
-	l.Check()
-	result = make([]types.Log, 0, len(l.logs))
-	copy(l.logs, result)
+	l.check()
+	result = make([]types.Log, len(l.logs))
+	copy(result, l.logs)
 	defer streamFinalizer(l)
 	if l.err != nil {
 		err = l.err
@@ -201,8 +212,6 @@ type nocopy uintptr
 type FilterFunc func(log []types.Log, work *workUnit) error
 
 func onWorkStream(stream *LogsStream) {
-	stream.m.Lock()
-	defer stream.m.Unlock()
 	var workNumber, remainNumber int
 	if maxConcurrentHandlerNumber < len(stream.logs) {
 		workNumber = maxWorkerNumber
@@ -212,7 +221,7 @@ func onWorkStream(stream *LogsStream) {
 			remainNumber = remainNumber - 1
 		}
 	} else {
-		workNumber = len(stream.logs)*defaultHandlerNumberPerWorker + 1
+		workNumber = len(stream.logs)/defaultHandlerNumberPerWorker + 1
 		if (workNumber-1)*defaultHandlerNumberPerWorker == len(stream.logs) {
 			workNumber = workNumber - 1
 		}
@@ -231,17 +240,21 @@ func mallocWorkUnit(stream *LogsStream, workNumber int, remainNumber int) {
 		if begin > end {
 			return
 		}
+		var to = defaultHandlerNumberPerWorker + begin
+		if to > end {
+			to = end
+		}
 		if !stream.init {
-			var work = &workUnit{result: make([]types.Log, 0, defaultHandlerNumberPerWorker), from: begin, to: defaultHandlerNumberPerWorker + begin, stream: stream}
+			var work = &workUnit{result: make([]types.Log, 0, defaultHandlerNumberPerWorker), from: begin, to: to, stream: stream}
 			stream.work = append(stream.work, work)
 			stream.finishWork = append(stream.finishWork, work)
 		} else {
 			var temp = stream.work[i]
 			temp.from = begin
-			temp.to = begin + defaultHandlerNumberPerWorker
+			temp.to = to
 			temp.result = temp.result[0:0]
 		}
-		begin = begin + defaultHandlerNumberPerWorker
+		begin = to
 	}
 	if remainNumber == 0 {
 		return
@@ -254,23 +267,25 @@ func mallocWorkUnit(stream *LogsStream, workNumber int, remainNumber int) {
 		if begin > end {
 			return
 		}
+		var to = defaultHandlerNumberPerWorker + begin
+		if to > end {
+			to = end
+		}
 		if !stream.init {
-			var work = &workUnit{result: make([]types.Log, 0, defaultHandlerNumberPerWorker), from: begin, to: defaultHandlerNumberPerWorker + begin, stream: stream}
+			var work = &workUnit{result: make([]types.Log, 0, defaultHandlerNumberPerWorker), from: begin, to: to, stream: stream}
 			stream.waitWork = append(stream.waitWork, work)
 			stream.finishWork = append(stream.finishWork, work)
 		} else {
 			var temp = stream.finishWork[workNumber+i]
 			temp.from = begin
-			temp.to = begin + defaultHandlerNumberPerWorker
+			temp.to = to
 			temp.result = temp.result[0:0]
 			stream.waitWork = append(stream.waitWork, temp)
 		}
-		begin = begin + defaultHandlerNumberPerWorker
+		begin = to
 	}
 }
 func collect(stream *LogsStream) {
-	stream.m.Lock()
-	defer stream.m.Unlock()
 	stream.logs = nil
 	var result = make([]types.Log, 0, len(stream.logs))
 	for i := 0; i < stream.workNumber; i++ {

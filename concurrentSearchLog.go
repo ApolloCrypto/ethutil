@@ -39,7 +39,7 @@ const maxWorkNumber = maxConcurrentNumber / maxQueryBlockSize
 const emergencyRecovery = 100
 const smoothRecoverRatio = 0.25
 
-var defaultSmoothRecoverTimes = time.Millisecond * 500
+var defaultSmoothRecoverTimes = time.Millisecond * 2
 
 func (c *ethClient) GetCurrentBlockNumber() (uint64, error) {
 	return c.client.BlockNumber(context.Background())
@@ -147,7 +147,7 @@ func newLogsWork(global *globalInfo) (result *logsWork) {
 		id:        id,
 		done:      make(chan struct{}, 1),
 		shareInfo: global,
-		filter:    ethereum.FilterQuery{Topics: global.topics, Addresses: global.address, FromBlock: big.NewInt(int64(id)*maxQueryBlockSize + global.offset), ToBlock: big.NewInt(int64(id+1)*maxQueryBlockSize - 1 + global.offset)},
+		filter:    ethereum.FilterQuery{Topics: global.topics, Addresses: global.address, FromBlock: big.NewInt(int64(id)*maxQueryBlockSize + global.offset), ToBlock: big.NewInt(end)},
 	}
 	result.done <- struct{}{}
 	global.queue[id] = result
@@ -163,6 +163,10 @@ type controlPanel struct {
 }
 
 func (cp *controlPanel) smoothRecover() {
+	fmt.Println("check control")
+	defer func() {
+		fmt.Println("recover")
+	}()
 	time.Sleep(defaultSmoothRecoverTimes)
 	var timeGap = time.NewTicker(defaultSmoothRecoverTimes)
 	for {
